@@ -1,4 +1,4 @@
-# parts_of_speech
+# confusionwords
 
 Dictionaries to allow the Confusion Words to be selected in Zeeguu.
 
