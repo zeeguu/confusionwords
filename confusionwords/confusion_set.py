@@ -53,6 +53,7 @@ class ConfusionSet():
         self.verbose = verbose
         self.count_dictionary = dict()
         self.pos_dictionary = dict()
+        self.pos_dictionary_filtered = None
         self.word_list = set()
         self.char_list = set()
     
@@ -163,7 +164,6 @@ class ConfusionSet():
                         if chars_accepted.match(c):
                             char_confusion_set.add(c)
                 
-
         # Transform the sets into lists so they can be sampled
         for pos, value_i in pos_confusion_set.items():
             if pos in LEMMA_CONFUSION_SET:
@@ -209,25 +209,26 @@ class ConfusionSet():
 
         return to_json_pos_confusion_set
     
-    def get_filter_dictionary(self, min_lemma_len=1, ignore_pos=set()):
+    def get_filter_dictionary(self, min_lemma_len=1, ignore_pos=set(), recreate=False):
         """
             Returns a filtered POS dictionary
         """
-        new_pos_dictionary = dict()
-        for pos, value_i in self.pos_dictionary.items():
-            if pos in LEMMA_CONFUSION_SET:
-                new_pos_dictionary[pos] = value_i
-            else:
-                filter_dict = copy.deepcopy(self.count_dictionary[pos])
-                for t, count in self.count_dictionary[pos].items():
-                    # Handle Case in Lemma Words
-                    if count < self.pos_min_count:
-                        filter_dict.pop(t)
-                        if self.verbose: print(f"Deleted '{t}', as a POS {pos}")
-                new_pos_dictionary[pos] = list(filter_dict.keys())
+        if self.pos_dictionary_filtered is None or recreate:
+            new_pos_dictionary = dict()
+            for pos, value_i in self.pos_dictionary.items():
+                if pos in LEMMA_CONFUSION_SET:
+                    new_pos_dictionary[pos] = value_i
+                else:
+                    filter_dict = copy.deepcopy(self.count_dictionary[pos])
+                    for t, count in self.count_dictionary[pos].items():
+                        # Handle Case in Lemma Words
+                        if count < self.pos_min_count:
+                            filter_dict.pop(t)
+                            if self.verbose: print(f"Deleted '{t}', as a POS {pos}")
+                    new_pos_dictionary[pos] = list(filter_dict.keys())
 
-        new_pos_dictionary = self.filter_pos_dictionary(new_pos_dictionary, min_lemma_len, ignore_pos=ignore_pos)
-        return new_pos_dictionary
+            self.pos_dictionary_filtered = self.filter_pos_dictionary(new_pos_dictionary, min_lemma_len, ignore_pos=ignore_pos)
+        return self.pos_dictionary_filtered
 
     def save_json_confusion_dictionary(self, filename, dictionary):
         """
@@ -236,7 +237,8 @@ class ConfusionSet():
         with open(f"{filename}.json", "w", encoding="utf-8") as f:
             json.dump(dictionary, f)
 
-    def save_confusionset_state(self, filepath, filetype="json", save_filtered_pos=False):
+    def save_confusionset_state(self, filename, filetype="json", save_filtered_pos=False, 
+                                save_word_list=False, save_char_list=False):
         assert filetype in SUPPORTED_SAVE_OBJ, f"Filetype needs to be in {SUPPORTED_SAVE_OBJ} got: 'filetype'"
         if filetype == "json":
             json_object = {
@@ -248,49 +250,53 @@ class ConfusionSet():
                     "prob_filter" : self.prob_filter,
                     "pos_min_count" : self.pos_min_count,
                     "verbose" : self.verbose,
-                    "count_dictionary"  : f"{filepath}_count", 
-                    "pos_dictionary" : f"{filepath}_pos" ,
+                    "count_dictionary"  : self.count_dictionary, 
+                    "pos_dictionary" : self.pos_dictionary,
                     "word_list" : list(self.word_list),
-                    "char_list" : list(self.char_list) ,
+                    "char_list" : list(self.char_list),
             }
-            self.save_json_confusion_dictionary(json_object["count_dictionary"], self.count_dictionary)
-            self.save_json_confusion_dictionary(json_object["pos_dictionary"], self.pos_dictionary)
-            self.save_json_confusion_dictionary(f"{filepath}", json_object)
+            if not save_word_list: del json_object["word_list"]
+            if not save_char_list: del json_object["char_list"]
+            if save_filtered_pos:
+                json_object["pos_dictionary"] = self.filter_pos_dictionary(json_object["pos_dictionary"])
+
+            self.save_json_confusion_dictionary(f"{filename}", json_object)
 
         elif filetype == "pkl":
-            with open(f"{filepath}.pkl", "wb") as f:
+            with open(f"{filename}.pkl", "wb") as f:
                 pickle.dump(self, f)
     
-    def load_confusionset_state(self, filepath):
-        assert ".json" in filepath or ".pkl" in filepath, f"Unsupported file extension. Found: '{filepath}'"
-        if ".json" in filepath:
-            json_state = dict()
-            json_count = dict()
-            json_pos = dict()
-            with open(f"{filepath}", "r", encoding="utf-8") as f:
-                json_state = json.load(f)
-            # Remove the final extension
-            path_to_file = os.sep.join(filepath.split(os.sep)[:-1])
-            count_path = os.path.join(path_to_file, json_state["count_dictionary"] + ".json")
-            pos_path = os.path.join(path_to_file, json_state["pos_dictionary"] + ".json")
-            with open(count_path, "r", encoding="utf-8") as f:
-                json_count = json.load(f)
-            with open(pos_path, "r", encoding="utf-8") as f:
-                json_pos = json.load(f)
+    def __load_confusionset_state(self, json_state):
+        self.language = json_state["language"]
+        self.unnecessary_POS = set(json_state["unnecessary_POS"])
+        self.filter_sentence_size = json_state["filter_sentence_size"]
+        self.min_sent_size = json_state["min_sent_size"]
+        self.max_sent_size = json_state["max_sent_size"]
+        self.prob_filter = json_state["prob_filter"]
+        self.pos_min_count = json_state["pos_min_count"]
+        self.verbose = json_state["verbose"]
+        self.count_dictionary = json_state["count_dictionary"]
+        self.pos_dictionary = json_state["pos_dictionary"]
+        self.word_list = set(json_state.get("word_list", []))
+        self.char_list = set(json_state.get("char_list", []))
+        self.get_filter_dictionary()
+    
+    def load_confusionset_from_file(self, filepath):
+        assert ".json" in filepath, f"Unsupported file extension. Found: '{filepath}'"
+        json_state = dict()
+        with open(f"{filepath}", "r", encoding="utf-8") as f:
+            json_state = json.load(f)
+        # Store data in object:
+        self.__load_confusionset_state(json_state)
+    
+    def load_confusionset_from_dict(self, dict_object):
+        self.__load_confusionset_state(dict_object)
 
-            self.language = json_state["language"]
-            self.unnecessary_POS = set(json_state["unnecessary_POS"])
-            self.filter_sentence_size = json_state["filter_sentence_size"]
-            self.min_sent_size = json_state["min_sent_size"]
-            self.max_sent_size = json_state["max_sent_size"]
-            self.prob_filter = json_state["prob_filter"]
-            self.pos_min_count = json_state["pos_min_count"]
-            self.verbose = json_state["verbose"]
-            self.count_dictionary = json_count
-            self.pos_dictionary = json_pos
-            self.word_list = set(json_state["word_list"])
-            self.char_list = set(json_state["char_list"])
-
-        elif ".pkl" in filepath:
-            with open(f"{filepath}", "rb") as f:
-                self = pickle.load(f)
+    def __str__(self):
+        total_len = 0
+        for key, vals in self.pos_dictionary.items():
+            total_len += len(vals)
+        return f"ConfusionSet | Lang:'{self.language}' | Total Words: '{total_len}'"
+    
+    def __repr__(self) -> str:
+        return f"(ConfusionSet, L:{self.language})"
