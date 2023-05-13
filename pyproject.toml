@@ -7,3 +7,5 @@ name = "confusionwords"
 version = "0.0.1"
 dependencies = ["regex", "numpy", "scipy"]
 
+[tool.setuptools.package-data]
+"confusionwords.data.da" = ['*.json']
