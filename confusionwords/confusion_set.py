@@ -1,9 +1,7 @@
 import regex as re
 import numpy as np
 import copy
-import os
 import json
-import pickle
 from scipy.special import softmax
 import string
 
@@ -11,8 +9,8 @@ import string
 """
     Class to generate the confusion words for ZeeGuu
 """
-LEMMA_CONFUSION_SET = set(["VERB","AUX", "NOUN", "ADJ", "DET"])
-SUPPORTED_SAVE_OBJ = set(["json","pkl"])
+DEFAULT_LEMMA_CONFUSION_SET = set(["VERB","AUX", "NOUN", "ADJ", "DET"])
+SUPPORTED_SAVE_OBJ = set(["json"])
 
 POS_PROBS = {
     "danish": "morphologizer",
@@ -25,7 +23,7 @@ class ConfusionSet():
         Class to create the confusion set for the ZeeGuu OrderWords exercise.
 
         Stores the number of counts for different words according to their POS and Lemmas, given the classes
-        defined in LEMMA_CONFUSION_SET and POS_CONFUSION_SET.
+        defined in LEMMA_CONFUSION_SET and the remaining classes are stored in a list.
 
         The Softmax probabilities can be used to filter out cases where model has low probability assigned (0-1).
             Suggestion: 0.8 - 0.9
@@ -36,15 +34,19 @@ class ConfusionSet():
         
         The minimum number of a word ocurring within the dictionary as a certain POS can be used to filter the dictionary.
             Suggestion: 2, meaning that the word appears at least twice. For larger datasets, this value can be higher.
-
     """
     def __init__(self, language:str, filter_sentence_size=True, min_sent_size=4, max_sent_size=20, 
-                            prob_filter=0.8, pos_min_count = 2, unnecessary_POS=set(["PROPN", "X", "INTJ", "SPACE", "PUNCT", "SYM", "NUM"]), 
-                            verbose=False) -> None:
+                            prob_filter=0.8, pos_min_count = 2, unnecessary_POS=set(["PROPN", "X", "INTJ", "SPACE", "PUNCT", "SYM", "NUM"]),
+                            lemma_set = DEFAULT_LEMMA_CONFUSION_SET, verbose=False) -> None:
         
         assert language in POS_PROBS, f"Language '{language}' is not supported, please use one of the following:{list(POS_PROBS.keys())}"
         self.language = language
         self.unnecessary_POS = unnecessary_POS
+        self.lemma_set = lemma_set
+        if self.language == "english":
+            # if Language is English determinants shouldn't be stored as lemmas.
+            if "DET" in self.lemma_set: self.lemma_set.remove("DET")
+            print("'DET' was removed from the lemma sets, as this doesn't apply to English.")
         self.filter_sentence_size = filter_sentence_size
         self.min_sent_size = min_sent_size
         self.max_sent_size = max_sent_size
@@ -139,7 +141,7 @@ class ConfusionSet():
                     if token_string[-1] in string_punct: token_string = token_string[:-1]
                     
                     word_confusion_set.add(token_string)
-                    if token.pos_ in LEMMA_CONFUSION_SET:
+                    if token.pos_ in self.lemma_set:
                         # Handle case where there is no dictionary yet
                         if token.pos_ not in pos_confusion_set:
                             pos_confusion_set[token.pos_] = dict()
@@ -166,7 +168,7 @@ class ConfusionSet():
                 
         # Transform the sets into lists so they can be sampled
         for pos, value_i in pos_confusion_set.items():
-            if pos in LEMMA_CONFUSION_SET:
+            if pos in self.lemma_set:
                 for lemma, value_j in pos_confusion_set[pos].items():
                     pos_confusion_set[pos][lemma] = list(value_j)
             else:
@@ -190,11 +192,6 @@ class ConfusionSet():
             # outputed as a json file.
             return {k:list(v) for k, v in d.items() if len(v) > min_lemma_len}
         
-
-        if self.language == "english":
-            # if Language is English determinants shouldn't be filtered.
-            ignore_pos = set(["DET"])
-
         to_json_pos_confusion_set = dict()
         for k, v in dictionary_to_filter.items():
             if k in self.unnecessary_POS: continue
@@ -209,6 +206,12 @@ class ConfusionSet():
 
         return to_json_pos_confusion_set
     
+    def get_lemma_set(self):
+        """
+            Returns the lemma set currently being used.
+        """
+        return self.lemma_set
+    
     def get_filter_dictionary(self, min_lemma_len=1, ignore_pos=set(), recreate=False):
         """
             Returns a filtered POS dictionary
@@ -216,7 +219,7 @@ class ConfusionSet():
         if self.pos_dictionary_filtered is None or recreate:
             new_pos_dictionary = dict()
             for pos, value_i in self.pos_dictionary.items():
-                if pos in LEMMA_CONFUSION_SET:
+                if pos in self.lemma_set:
                     new_pos_dictionary[pos] = value_i
                 else:
                     filter_dict = copy.deepcopy(self.count_dictionary[pos])
@@ -244,6 +247,7 @@ class ConfusionSet():
             json_object = {
                     "language" : self.language ,
                     "unnecessary_POS" : list(self.unnecessary_POS),
+                    "lemma_set":list(self.lemma_set),
                     "filter_sentence_size" : self.filter_sentence_size,
                     "min_sent_size"  : self.min_sent_size,
                     "max_sent_size" : self.max_sent_size,
@@ -261,14 +265,11 @@ class ConfusionSet():
                 json_object["pos_dictionary"] = self.filter_pos_dictionary(json_object["pos_dictionary"])
 
             self.save_json_confusion_dictionary(f"{filename}", json_object)
-
-        elif filetype == "pkl":
-            with open(f"{filename}.pkl", "wb") as f:
-                pickle.dump(self, f)
     
     def __load_confusionset_state(self, json_state):
         self.language = json_state["language"]
         self.unnecessary_POS = set(json_state["unnecessary_POS"])
+        self.lemma_set = set(json_state["lemma_set"])
         self.filter_sentence_size = json_state["filter_sentence_size"]
         self.min_sent_size = json_state["min_sent_size"]
         self.max_sent_size = json_state["max_sent_size"]
@@ -296,7 +297,7 @@ class ConfusionSet():
         total_len = 0
         for key, vals in self.pos_dictionary.items():
             total_len += len(vals)
-        return f"ConfusionSet | Lang:'{self.language}' | Total Words: '{total_len}'"
+        return f"ConfusionSet, L:'{self.language}', Total Words: '{total_len}'"
     
     def __repr__(self) -> str:
         return f"(ConfusionSet, L:{self.language})"
